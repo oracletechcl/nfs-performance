@@ -13,7 +13,7 @@ The NFS server is the HP-UX machine `167.28.202.2`. Do not run the customer scri
 
 Send only `nfs-read-customer.sh` to the customer.
 
-On OCI Linux `10.4.3.209`, select an existing large file beneath `/habiacu`. The script never modifies that file; it reads it into `/dev/null`.
+On OCI Linux `10.4.3.209`, select an existing large file on the affected NFS mount. The script detects the mount from the file path. It never modifies that file; it reads it into `/dev/null`.
 
 Run:
 
@@ -21,21 +21,26 @@ Run:
 chmod 755 nfs-read-customer.sh
 
 sudo ./nfs-read-customer.sh \
-  /habiacu/PATH_TO_EXISTING_LARGE_FILE
+  /habinat/PATH_TO_EXISTING_LARGE_FILE
 ```
 
 Example:
 
 ```bash
-sudo ./nfs-read-customer.sh /habiacu/backups/large-backup-file
+sudo ./nfs-read-customer.sh /habinat/SLB/DATA/RESTOT202603.SLB
 ```
 
 The script validates that:
 
 - The file exists and is readable.
-- The file is beneath `/habiacu`.
-- `/habiacu` is an NFS mount.
-- The NFS source is `167.28.202.2`.
+- The file resides on an NFS or NFSv4 mount.
+- The effective mount source, target, and options are recorded.
+
+Invoking it with `sh` also works; the script automatically re-launches itself under Bash:
+
+```bash
+sudo sh nfs-read-customer.sh /habinat/SLB/DATA/RESTOT202603.SLB
+```
 
 It then runs three read tests and collects NFS, TCP, route, interface, socket, and bounded packet-capture evidence.
 

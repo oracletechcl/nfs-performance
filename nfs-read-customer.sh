@@ -2,13 +2,19 @@
 
 # Single-file customer runner. Execute on Linux OCI client 10.4.3.209.
 
+# Customers sometimes invoke this file with "sh". Re-launch under Bash because
+# the collector uses Bash arrays and PIPESTATUS.
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -u
 set -o pipefail
 umask 077
 export LC_ALL=C
 
 SERVER=167.28.202.2
-MOUNT=/habiacu
+MOUNT=
 RUNS=3
 BLOCK_SIZE=1M
 INTERVAL=5
@@ -50,7 +56,7 @@ write_metrics() {
 }
 
 if [[ -z $TEST_FILE || $TEST_FILE == -h || $TEST_FILE == --help ]]; then
-    printf 'Usage: sudo ./nfs-read-customer.sh /habiacu/existing-large-file\n'
+    printf 'Usage: sudo ./nfs-read-customer.sh /path/on/nfs/existing-large-file\n'
     exit $([[ -n $TEST_FILE ]] && echo 0 || echo 1)
 fi
 (( $# == 1 )) || die "provide exactly one existing test-file path"
@@ -59,19 +65,20 @@ fi
 for cmd in findmnt stat dd nfsstat ss ip tar awk tee date readlink; do
     have "$cmd" || die "required command not found: $cmd"
 done
-[[ -x /usr/bin/time ]] || die "/usr/bin/time is required"
 [[ -f $TEST_FILE && -r $TEST_FILE ]] || die "file does not exist or is unreadable: $TEST_FILE"
 
 TEST_FILE=$(readlink -f "$TEST_FILE") || die "cannot resolve test-file path"
-[[ $TEST_FILE == "$MOUNT"/* ]] || die "file must be below $MOUNT"
 FINDMNT_LINE=$(findmnt -T "$TEST_FILE" -n -o SOURCE,TARGET,FSTYPE,OPTIONS) || \
     die "cannot resolve NFS mount"
 MOUNT_SOURCE=$(awk '{print $1}' <<<"$FINDMNT_LINE")
 MOUNT_TARGET=$(awk '{print $2}' <<<"$FINDMNT_LINE")
 MOUNT_TYPE=$(awk '{print $3}' <<<"$FINDMNT_LINE")
 [[ $MOUNT_TYPE == nfs || $MOUNT_TYPE == nfs4 ]] || die "file is on $MOUNT_TYPE, not NFS"
-[[ $MOUNT_SOURCE == "$SERVER":* ]] || die "NFS source is $MOUNT_SOURCE; expected $SERVER:/..."
-[[ $MOUNT_TARGET == "$MOUNT" ]] || die "actual mount is $MOUNT_TARGET; expected $MOUNT"
+MOUNT=$MOUNT_TARGET
+if [[ $MOUNT_SOURCE != "$SERVER":* ]]; then
+    printf 'WARNING: NFS source is %s; expected IP %s. Continuing and recording evidence.\n' \
+        "$MOUNT_SOURCE" "$SERVER" >&2
+fi
 
 RUN_ID=$(date +%Y%m%d_%H%M%S)
 WORKDIR="/tmp/nfs_read_customer_${RUN_ID}"
@@ -180,11 +187,14 @@ for (( run=1; run<=RUNS; run++ )); do
     printf 'Read test %d of %d...\n' "$run" "$RUNS"
     printf '\n===== READ TEST %d =====\n' "$run" | tee -a "$DD_LOG"
     RUN_TMP="$WORKDIR/read_${run}.tmp"
-    /usr/bin/time -f 'TIME real_seconds=%e' \
-        dd if="$TEST_FILE" of=/dev/null bs="$BLOCK_SIZE" status=progress 2>&1 | \
+    START_NS=$(date +%s%N)
+    dd if="$TEST_FILE" of=/dev/null bs="$BLOCK_SIZE" status=progress 2>&1 | \
         tee -a "$DD_LOG" "$RUN_TMP"
     DD_STATUS=${PIPESTATUS[0]}
-    ELAPSED=$(awk -F= '/^TIME real_seconds=/{print $2; exit}' "$RUN_TMP")
+    END_NS=$(date +%s%N)
+    ELAPSED=$(awk -v start="$START_NS" -v end="$END_NS" \
+        'BEGIN {printf "%.3f", (end-start)/1000000000}')
+    printf 'TIME real_seconds=%s\n' "$ELAPSED" | tee -a "$DD_LOG"
     rm -f "$RUN_TMP"
     if (( DD_STATUS != 0 )) || [[ -z $ELAPSED ]]; then
         printf 'RESULT run=%d status=failed dd_exit=%d\n' "$run" "$DD_STATUS" | tee -a "$DD_LOG"
